@@ -7,7 +7,7 @@ Slack 振り分け数値 月別集計 & 給料計算アプリ (マルチユー�
 import os
 import re
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -18,6 +18,22 @@ from slack_client import SlackClient, SlackAPIError
 from sample_data import generate_sample_distribution_messages
 
 load_dotenv()
+
+# 日本時間（JST = UTC+9）のタイムゾーン定義
+JST = timezone(timedelta(hours=9))
+
+def clean_display_name(raw_name: str) -> str:
+    """'948919 村本拓海 948919 村本拓海' などの重複を '948919 村本拓海' に整形"""
+    if not raw_name:
+        return ""
+    words = raw_name.split()
+    seen = set()
+    cleaned = []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            cleaned.append(w)
+    return " ".join(cleaned)
 
 st.set_page_config(
     page_title="振り分け給料計算",
@@ -158,7 +174,7 @@ def make_initial_demo_records():
     )
     records = []
     for m in demo_msgs:
-        dt = datetime.fromtimestamp(float(m["ts"]))
+        dt = datetime.fromtimestamp(float(m["ts"]), tz=JST)
         items = parse_slack_message(m["text"], mode="person_line", person_keywords=["948919", "村本拓海"])
         for it in items:
             records.append({
@@ -329,7 +345,8 @@ active_user_key = resolved_uid if resolved_uid else search_input
 
 # ユーザー名バッジの表示
 if resolved_name:
-    st.markdown(f'<div class="user-badge">👤 メンバー: <b>{resolved_name}</b></div>', unsafe_allow_html=True)
+    clean_name = clean_display_name(resolved_name)
+    st.markdown(f'<div class="user-badge">👤 メンバー: <b>{clean_name}</b></div>', unsafe_allow_html=True)
 elif search_input:
     st.markdown(f'<div class="user-badge">🔍 キーワード: <b>{search_input}</b></div>', unsafe_allow_html=True)
 
@@ -341,7 +358,7 @@ valid_records = []
 for r in current_records:
     if isinstance(r, dict) and "target_value" in r:
         if "year_month" not in r:
-            r["year_month"] = r.get("date", datetime.now().strftime("%Y-%m-%d"))[:7]
+            r["year_month"] = r.get("date", datetime.now(JST).strftime("%Y-%m-%d"))[:7]
         valid_records.append(r)
 
 df = pd.DataFrame(valid_records)
@@ -350,7 +367,7 @@ df = pd.DataFrame(valid_records)
 if not df.empty and "year_month" in df.columns:
     month_options = list(reversed(sorted(df["year_month"].unique().tolist())))
 else:
-    month_options = [datetime.now().strftime("%Y-%m")]
+    month_options = [datetime.now(JST).strftime("%Y-%m")]
 
 month_display_map = {ym: format_japanese_month(ym) for ym in month_options}
 
@@ -390,9 +407,10 @@ if has_creds:
 
                     parse_kws = [resolved_uid] if resolved_uid else [search_input]
                     new_records = []
-                    disp_label = resolved_name if resolved_name else search_input
+                    disp_label = clean_display_name(resolved_name) if resolved_name else search_input
                     for m in matches:
-                        dt = datetime.fromtimestamp(float(m.get("ts", 0)))
+                        # 日本時間 (JST) で正確に変換（海外サーバーのUTCズレを防止）
+                        dt = datetime.fromtimestamp(float(m.get("ts", 0)), tz=JST)
                         items = parse_slack_message(m.get("text", ""), mode="person_line", person_keywords=parse_kws)
                         for it in items:
                             new_records.append({
@@ -475,7 +493,7 @@ with st.expander("⚡ Slack連携設定 ＆ 手動コピペ", expanded=not has_c
                         for r in extracted_records:
                             r["is_demo"] = False
                             if "year_month" not in r:
-                                r["year_month"] = r.get("date", datetime.now().strftime("%Y-%m-%d"))[:7]
+                                r["year_month"] = r.get("date", datetime.now(JST).strftime("%Y-%m-%d"))[:7]
 
                         if paste_mode == "既存データに追加":
                             cur = load_user_records(active_user_key)
