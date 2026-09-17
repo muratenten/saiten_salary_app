@@ -391,14 +391,20 @@ with col_input2:
     )
 
 with col_input3:
-    current_saved_rate = current_rates.get(selected_month, 2000)
+    current_saved_rate = int(current_rates.get(selected_month, 2000))
     month_short_label = format_japanese_month(selected_month)
+    rate_widget_key = f"rate_{active_user_key}_{selected_month}"
+    
+    # ウィジェット描画前なら安全にsession_stateを同期可能
+    if rate_widget_key in st.session_state and st.session_state[rate_widget_key] != current_saved_rate:
+        st.session_state[rate_widget_key] = current_saved_rate
+
     input_rate = st.number_input(
         f"💴 {month_short_label}の単価 (円)",
-        value=int(current_saved_rate),
+        value=current_saved_rate,
         step=100,
         min_value=0,
-        key=f"rate_{active_user_key}_{selected_month}",
+        key=rate_widget_key,
         help=f"{month_short_label}の集計値に掛ける単価です。自動保存されます。"
     )
     if input_rate != current_saved_rate:
@@ -694,8 +700,6 @@ for idx, row in edited_table.iterrows():
     old_rate = int(current_rates.get(ym, 2000))
     if new_rate != old_rate:
         current_rates[ym] = new_rate
-        # 上部のウィジェット状態も同期
-        st.session_state[f"rate_{active_user_key}_{ym}"] = new_rate
         rate_updated = True
 
 if rate_updated:
