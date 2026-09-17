@@ -168,14 +168,14 @@ def save_user_rates(user_key: str, rates: dict):
 
 def make_initial_demo_records():
     demo_msgs = generate_sample_distribution_messages(
-        target_name="村本拓海",
-        target_id="948919",
+        target_name="テスト太郎",
+        target_id="123456",
         count=35
     )
     records = []
     for m in demo_msgs:
         dt = datetime.fromtimestamp(float(m["ts"]), tz=JST)
-        items = parse_slack_message(m["text"], mode="person_line", person_keywords=["948919", "村本拓海"])
+        items = parse_slack_message(m["text"], mode="person_line", person_keywords=["123456", "テスト太郎"])
         for it in items:
             records.append({
                 "date": dt.strftime("%Y-%m-%d"),
@@ -330,14 +330,25 @@ creds = load_credentials()
 has_creds = bool(creds.get("token") and creds.get("cookie_d"))
 
 # ----------------- 検索・月選択・単価入力エリア -----------------
+query_id = st.query_params.get("id", "")
 col_input1, col_input2, col_input3 = st.columns([1.5, 1.2, 1.3])
 
 with col_input1:
     search_input = st.text_input(
         "👤 社員番号 または 名前",
-        value="948919",
-        placeholder="例: 948919 または 名前"
+        value=query_id,
+        placeholder="例: 123456 または 田中"
     ).strip()
+
+if search_input:
+    st.query_params["id"] = search_input
+elif "id" in st.query_params:
+    del st.query_params["id"]
+
+# 未入力時はクリーンな初期案内画面を表示
+if not search_input:
+    st.info("👆 **上の入力枠に、ご自身の「社員番号」または「お名前」を入力してください。**\n\n入力すると、自動でメンバーを照合して給料計算画面が表示されます。")
+    st.stop()
 
 # 入力値からユーザーを自動特定（方法A）
 resolved_uid, resolved_name = find_user_by_keyword(search_input)
@@ -455,7 +466,7 @@ with st.expander("⚡ Slack連携設定 ＆ 手動コピペ", expanded=not has_c
         **やり方（超かんたん・3ステップ）:**
         1. Chrome等のブラウザで **[Slack (Web版)](https://app.slack.com/client/)** を開きます。
         2. キーボードで **`Command (⌘) + Option + I`** を押し、上部の **「Network（ネットワーク）」** タブをクリック。
-        3. Slackの検索バーで `in:#b01_振り分け完了報告 948919` と検索します。
+        3. Slackの検索バーで `in:#b01_振り分け完了報告` と検索します。
         4. Networkタブの通信一覧に **`search.messages`** が出るので、右クリック ➔ **「Copy」➔「Copy as cURL」** をクリック！
         5. 下の枠に貼り付けて **「設定を保存して全自動取得」** を押すだけ！
         """)
