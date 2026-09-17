@@ -392,16 +392,19 @@ with col_input2:
 
 with col_input3:
     current_saved_rate = current_rates.get(selected_month, 2000)
+    month_short_label = format_japanese_month(selected_month)
     input_rate = st.number_input(
-        "💴 単価 (円)",
+        f"💴 {month_short_label}の単価 (円)",
         value=int(current_saved_rate),
         step=100,
         min_value=0,
-        help="その月の集計値に掛ける単価です。自動保存されます。"
+        key=f"rate_{active_user_key}_{selected_month}",
+        help=f"{month_short_label}の集計値に掛ける単価です。自動保存されます。"
     )
     if input_rate != current_saved_rate:
         current_rates[selected_month] = input_rate
         save_user_rates(active_user_key, current_rates)
+        st.rerun()
 
 # ----------------- 自動更新ボタン（Slack連携済みの場合） -----------------
 if has_creds:
@@ -691,6 +694,8 @@ for idx, row in edited_table.iterrows():
     old_rate = int(current_rates.get(ym, 2000))
     if new_rate != old_rate:
         current_rates[ym] = new_rate
+        # 上部のウィジェット状態も同期
+        st.session_state[f"rate_{active_user_key}_{ym}"] = new_rate
         rate_updated = True
 
 if rate_updated:
