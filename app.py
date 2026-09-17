@@ -393,18 +393,12 @@ with col_input2:
 with col_input3:
     current_saved_rate = int(current_rates.get(selected_month, 2000))
     month_short_label = format_japanese_month(selected_month)
-    rate_widget_key = f"rate_{active_user_key}_{selected_month}"
-    
-    # ウィジェット描画前なら安全にsession_stateを同期可能
-    if rate_widget_key in st.session_state and st.session_state[rate_widget_key] != current_saved_rate:
-        st.session_state[rate_widget_key] = current_saved_rate
-
     input_rate = st.number_input(
         f"💴 {month_short_label}の単価 (円)",
         value=current_saved_rate,
         step=100,
         min_value=0,
-        key=rate_widget_key,
+        key=f"rate_{active_user_key}_{selected_month}_{current_saved_rate}",
         help=f"{month_short_label}の集計値に掛ける単価です。自動保存されます。"
     )
     if input_rate != current_saved_rate:
@@ -658,7 +652,7 @@ with col_tbl1:
 with col_tbl2:
     st.caption("💡 「単価」の数字を押して直接変更できます")
 
-table_df = monthly_df.copy().sort_values(by="year_month", ascending=False)
+table_df = monthly_df.copy().sort_values(by="year_month", ascending=False).reset_index(drop=True)
 table_df["avg_value"] = table_df["total_value"] / table_df["count"]
 
 # カラム構成
@@ -692,10 +686,10 @@ edited_table = st.data_editor(
     key=f"editor_{active_user_key}"
 )
 
-# 表内で単価が直接変更された場合の検知 & 即時保存
+# 表内で単価が直接変更された場合の検知 & 即時保存（インデックス1対1照合）
 rate_updated = False
 for idx, row in edited_table.iterrows():
-    ym = table_df.iloc[idx]["year_month"]
+    ym = str(table_df.at[idx, "year_month"])
     new_rate = int(row["unit_rate"])
     old_rate = int(current_rates.get(ym, 2000))
     if new_rate != old_rate:
