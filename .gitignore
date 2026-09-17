@@ -1,0 +1,28 @@
+# Credentials & Secrets
+credentials.json
+.env
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log
+cloudflare.log
+streamlit.log
+
+# Temporary data
+user_data/
+messages_cache.json
+rates_cache.json
