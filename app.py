@@ -642,42 +642,60 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # 月別一覧テーブル
-st.subheader("📋 月別データ一覧")
-display_df = monthly_df.copy().sort_values(by="year_month", ascending=False)
-display_df["avg_value"] = display_df["total_value"] / display_df["count"]
+# 月別一覧テーブル（直接編集可能）
+col_tbl1, col_tbl2 = st.columns([2, 1])
+with col_tbl1:
+    st.subheader("📋 月別データ一覧")
+with col_tbl2:
+    st.caption("💡 「単価」の数字を押して直接変更できます")
 
-cols_rename = {
-    "display_month": "年月",
-    "total_value": "集計値",
-    "unit_rate": "単価 (円)",
-    "salary": "💰 給料合計 (円)",
-    "count": "報告回数",
-    "avg_value": "1回あたり平均"
+table_df = monthly_df.copy().sort_values(by="year_month", ascending=False)
+table_df["avg_value"] = table_df["total_value"] / table_df["count"]
+
+# カラム構成
+show_cols = ["display_month", "total_value", "unit_rate", "salary"]
+if "items_count" in table_df.columns:
+    show_cols.append("items_count")
+show_cols.extend(["count", "avg_value"])
+
+col_config = {
+    "display_month": st.column_config.TextColumn("年月", disabled=True),
+    "total_value": st.column_config.NumberColumn("集計値", format="%.3f", disabled=True),
+    "unit_rate": st.column_config.NumberColumn(
+        "💴 単価 (円) ✏️",
+        min_value=0,
+        step=100,
+        format="¥%d",
+        help="クリックまたはタップして単価を直接変更できます"
+    ),
+    "salary": st.column_config.NumberColumn("💰 給料合計 (円)", format="¥%d", disabled=True),
+    "count": st.column_config.NumberColumn("報告回数", format="%d 回", disabled=True),
+    "avg_value": st.column_config.NumberColumn("1回あたり平均", format="%.3f", disabled=True)
 }
-if "items_count" in display_df.columns:
-    cols_rename["items_count"] = "件数合計"
+if "items_count" in table_df.columns:
+    col_config["items_count"] = st.column_config.NumberColumn("件数合計", format="%d 件", disabled=True)
 
-display_df = display_df.rename(columns=cols_rename)
-order_cols = ["年月", "集計値", "単価 (円)", "💰 給料合計 (円)"]
-if "件数合計" in display_df.columns:
-    order_cols.append("件数合計")
-order_cols.extend(["報告回数", "1回あたり平均"])
-
-format_map = {
-    "集計値": "{:.3f}",
-    "単価 (円)": "¥{:,.0f}",
-    "💰 給料合計 (円)": "¥{:,}",
-    "1回あたり平均": "{:.3f}",
-    "報告回数": "{:,} 回"
-}
-if "件数合計" in display_df.columns:
-    format_map["件数合計"] = "{:,.0f} 件"
-
-st.dataframe(
-    display_df[order_cols].style.format(format_map),
+edited_table = st.data_editor(
+    table_df[show_cols],
+    column_config=col_config,
     use_container_width=True,
-    hide_index=True
+    hide_index=True,
+    key=f"editor_{active_user_key}"
 )
+
+# 表内で単価が直接変更された場合の検知 & 即時保存
+rate_updated = False
+for idx, row in edited_table.iterrows():
+    ym = table_df.iloc[idx]["year_month"]
+    new_rate = int(row["unit_rate"])
+    old_rate = int(current_rates.get(ym, 2000))
+    if new_rate != old_rate:
+        current_rates[ym] = new_rate
+        rate_updated = True
+
+if rate_updated:
+    save_user_rates(active_user_key, current_rates)
+    st.rerun()
 
 # 該当ログの確認（折りたたみ）
 with st.expander("🔍 取り込まれたメッセージ行一覧"):
