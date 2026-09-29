@@ -166,6 +166,109 @@ def save_user_rates(user_key: str, rates: dict):
         pass
 
 
+def calc_income_tax_kou(gross_salary: int) -> int:
+    """国税庁 給与所得の源泉徴収税額表（月額表・甲欄・扶養親族等の数0人）"""
+    if gross_salary < 88000:
+        return 0
+    brackets = [
+        (88000, 89000, 130),
+        (89000, 90000, 180),
+        (90000, 91000, 240),
+        (91000, 92000, 290),
+        (92000, 93000, 340),
+        (93000, 94000, 390),
+        (94000, 95000, 450),
+        (95000, 96000, 500),
+        (96000, 97000, 550),
+        (97000, 98000, 600),
+        (98000, 99000, 660),
+        (99000, 100000, 710),
+        (100000, 101000, 760),
+        (101000, 102000, 820),
+        (102000, 103000, 870),
+        (103000, 105000, 950),
+        (105000, 107000, 1060),
+        (107000, 109000, 1160),
+        (109000, 111000, 1260),
+        (111000, 113000, 1370),
+        (113000, 115000, 1470),
+        (115000, 117000, 1570),
+        (117000, 119000, 1680),
+        (119000, 121000, 1780),
+        (121000, 123000, 1880),
+        (123000, 125000, 1990),
+        (125000, 127000, 2090),
+        (127000, 129000, 2190),
+        (129000, 131000, 2300),
+        (131000, 133000, 2400),
+        (133000, 135000, 2500),
+        (135000, 137000, 2610),
+        (137000, 139000, 2710),
+        (139000, 141000, 2810),
+        (141000, 143000, 2920),
+        (143000, 145000, 3020),
+        (145000, 147000, 3120),
+        (147000, 149000, 3230),
+        (149000, 151000, 3330),
+        (151000, 153000, 3430),
+        (153000, 155000, 3540),
+        (155000, 157000, 3640),
+        (157000, 159000, 3740),
+        (159000, 161000, 3850),
+        (161000, 163000, 3950),
+        (163000, 165000, 4050),
+        (165000, 167000, 4160),
+        (167000, 169000, 4260),
+        (169000, 171000, 4360),
+        (171000, 173000, 4470),
+        (173000, 175000, 4570),
+    ]
+    for low, high, tax in brackets:
+        if low <= gross_salary < high:
+            return tax
+    if gross_salary >= 175000:
+        base = gross_salary - 88000
+        return int(2500 + base * 0.05105)
+    return 0
+
+
+def calculate_tax(gross_salary: int, mode: str, custom_rate: float = 0.0) -> int:
+    """税額を計算する"""
+    if gross_salary <= 0:
+        return 0
+    if mode == "fuyo_salary":  # 扶養内・給与（月額表・甲欄）
+        return calc_income_tax_kou(gross_salary)
+    elif mode == "withholding_1021":  # 業務委託（10.21%）
+        return int(round(gross_salary * 0.1021))
+    elif mode == "withholding_3063":  # 乙欄（3.063%）
+        return int(round(gross_salary * 0.03063))
+    elif mode == "custom":
+        return int(round(gross_salary * (custom_rate / 100.0)))
+    elif mode == "none":
+        return 0
+    return calc_income_tax_kou(gross_salary)
+
+
+def load_user_tax_setting(user_key: str) -> dict:
+    fpath = get_user_storage_path(user_key, "tax")
+    if os.path.exists(fpath):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"mode": "fuyo_salary", "custom_rate": 0.0}
+
+
+def save_user_tax_setting(user_key: str, setting: dict):
+    fpath = get_user_storage_path(user_key, "tax")
+    try:
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(setting, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def make_initial_demo_records():
     demo_msgs = generate_sample_distribution_messages(
         target_name="テスト太郎",
@@ -364,6 +467,7 @@ elif search_input:
 # そのユーザー専用のデータをロード
 current_records = load_user_records(active_user_key)
 current_rates = load_user_rates(active_user_key)
+current_tax_setting = load_user_tax_setting(active_user_key)
 
 valid_records = []
 for r in current_records:
@@ -404,6 +508,50 @@ with col_input3:
     if input_rate != current_saved_rate:
         current_rates[selected_month] = input_rate
         save_user_rates(active_user_key, current_rates)
+        st.rerun()
+
+# ----------------- 税金・手取り設定 -----------------
+tax_modes_dict = {
+    "fuyo_salary": "🎓 扶養内・給与（月8.8万円未満は税金0円 / 源泉徴収表・甲欄準拠）",
+    "withholding_1021": "💼 業務委託（源泉徴収 10.21%）",
+    "withholding_3063": "📝 給与・乙欄（3.063% / 副業・従たる給与）",
+    "custom": "⚙️ カスタム税率 (%)",
+    "none": "💰 税金控除なし（額面通り）"
+}
+tax_mode_keys = list(tax_modes_dict.keys())
+cur_mode = current_tax_setting.get("mode", "fuyo_salary")
+cur_custom_rate = float(current_tax_setting.get("custom_rate", 0.0))
+mode_index = tax_mode_keys.index(cur_mode) if cur_mode in tax_mode_keys else 0
+
+with st.expander(f"⚙️ 税金・手取り計算の設定（現在: {tax_modes_dict.get(cur_mode, cur_mode).split('（')[0]}）", expanded=False):
+    st.caption("雇用形態に合わせて所得税・源泉徴収税額の差し引き方法を選択できます。")
+    col_t1, col_t2 = st.columns([3, 1])
+    with col_t1:
+        selected_tax_mode = st.radio(
+            "税金の計算方法",
+            options=tax_mode_keys,
+            format_func=lambda k: tax_modes_dict.get(k, k),
+            index=mode_index,
+            key=f"tax_mode_radio_{active_user_key}"
+        )
+    with col_t2:
+        new_custom_rate = cur_custom_rate
+        if selected_tax_mode == "custom":
+            new_custom_rate = st.number_input(
+                "税率 (%)",
+                min_value=0.0,
+                max_value=50.0,
+                value=float(cur_custom_rate),
+                step=0.1,
+                key=f"custom_tax_input_{active_user_key}"
+            )
+        elif selected_tax_mode == "fuyo_salary":
+            st.info("💡 **扶養内ルール**\n月額88,000円未満なら**所得税0円**（非課税）です。8.8万円を超えると少額の源泉徴収（8.8万〜8.9万なら130円）が引かれます。")
+
+    if selected_tax_mode != cur_mode or (selected_tax_mode == "custom" and new_custom_rate != cur_custom_rate):
+        current_tax_setting["mode"] = selected_tax_mode
+        current_tax_setting["custom_rate"] = new_custom_rate
+        save_user_tax_setting(active_user_key, current_tax_setting)
         st.rerun()
 
 # ----------------- 自動更新ボタン（Slack連携済みの場合） -----------------
@@ -553,7 +701,13 @@ if monthly_df.empty:
 
 # 各月の単価と給料を計算
 monthly_df["unit_rate"] = monthly_df["year_month"].apply(lambda ym: current_rates.get(ym, 2000))
-monthly_df["salary"] = (monthly_df["total_value"] * monthly_df["unit_rate"]).round().astype(int)
+monthly_df["gross_salary"] = (monthly_df["total_value"] * monthly_df["unit_rate"]).round().astype(int)
+monthly_df["salary"] = monthly_df["gross_salary"]
+
+tax_mode = current_tax_setting.get("mode", "fuyo_salary")
+custom_tax_rate = float(current_tax_setting.get("custom_rate", 0.0))
+monthly_df["tax"] = monthly_df["gross_salary"].apply(lambda s: calculate_tax(s, tax_mode, custom_tax_rate))
+monthly_df["take_home"] = monthly_df["gross_salary"] - monthly_df["tax"]
 monthly_df["display_month"] = monthly_df["year_month"].apply(format_japanese_month)
 
 # 選択月の行を取得
@@ -566,7 +720,9 @@ else:
 
 sel_total = selected_row["total_value"]
 sel_rate = int(selected_row["unit_rate"])
-sel_salary = int(selected_row["salary"])
+sel_gross = int(selected_row["gross_salary"])
+sel_tax = int(selected_row["tax"])
+sel_take_home = int(selected_row["take_home"])
 sel_reports = int(selected_row["count"])
 has_items = "items_count" in selected_row and pd.notna(selected_row["items_count"])
 sel_items = int(selected_row["items_count"]) if has_items else 0
@@ -577,11 +733,52 @@ sub_text = f"報告回数: {sel_reports} 回"
 if has_items:
     sub_text = f"件数合計: <b>{sel_items}</b> 件 ｜ {sub_text}"
 
+if sel_tax == 0:
+    if tax_mode == "fuyo_salary" and sel_gross < 88000:
+        tax_badge = "税金控除: <b>¥0</b>（月8.8万未満は非課税）"
+    elif tax_mode == "none":
+        tax_badge = "税金控除: <b>なし</b>"
+    else:
+        tax_badge = "税金控除: <b>¥0</b>"
+else:
+    tax_badge = f"税金控除: <b style='color: #ffeaa7;'>-¥{sel_tax:,}</b>"
+
 st.markdown(f"""
 <div class="big-stat-box">
-    <div class="big-stat-title">🗓️ {sel_display_name} の給料（支給見込）</div>
-    <div class="big-stat-number">¥ {sel_salary:,}</div>
-    <div class="big-stat-sub">集計値: <b>{sel_total:.3f}</b> × 単価: <b>¥{sel_rate:,}</b> ｜ {sub_text}</div>
+    <div class="big-stat-title">🗓️ {sel_display_name} の手取り見込（支給額）</div>
+    <div class="big-stat-number">¥ {sel_take_home:,}</div>
+    <div class="big-stat-sub">
+        額面給料: <b>¥{sel_gross:,}</b>（集計値: {sel_total:.3f} × 単価: ¥{sel_rate:,}） ｜ {tax_badge}
+    </div>
+    <div class="big-stat-sub" style="margin-top: 6px; font-size: 0.88rem; opacity: 0.9;">
+        {sub_text}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ----------------- 扶養内 103万円の壁メーター -----------------
+current_year = selected_month[:4]
+year_df = monthly_df[monthly_df["year_month"].str.startswith(current_year)]
+year_gross = int(year_df["gross_salary"].sum())
+year_take_home = int(year_df["take_home"].sum())
+year_tax = int(year_df["tax"].sum())
+limit_103 = 1030000
+rem_103 = max(0, limit_103 - year_gross)
+pct_103 = min(100.0, (year_gross / limit_103) * 100) if limit_103 > 0 else 0
+
+st.markdown(f"""
+<div style="background: #ffffff; border: 1px solid #e1e8ed; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.04);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-weight: 700; color: #2c3e50; font-size: 0.95rem;">🎯 {current_year}年 扶養内（103万円の壁）メーター</span>
+        <span style="font-size: 0.9rem; color: #555;">年間累計額面: <b>¥{year_gross:,}</b> / 103万円 (残り枠: <b style="color: {'#e74c3c' if rem_103 < 100000 else '#27ae60'};">¥{rem_103:,}</b>)</span>
+    </div>
+    <div style="background: #edf2f7; border-radius: 8px; height: 12px; overflow: hidden; width: 100%;">
+        <div style="background: {'linear-gradient(90deg, #f39c12, #e74c3c)' if pct_103 >= 85 else 'linear-gradient(90deg, #11998e, #38ef7d)'}; width: {pct_103:.1f}%; height: 100%; border-radius: 8px;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; font-size: 0.78rem; color: #7f8c8d; margin-top: 5px;">
+        <span>年間進捗: {pct_103:.1f}% ｜ 年間手取り累計: ¥{year_take_home:,}（控除税額計: ¥{year_tax:,}）</span>
+        <span>※年収103万円以下の場合、源泉徴収された所得税は年末調整や確定申告で全額還付されます</span>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -592,24 +789,36 @@ with col_g1:
 with col_g2:
     chart_view = st.radio(
         "グラフ表示",
-        ["💰 給料額 (円)", "📊 集計数値"],
+        ["💵 手取り額 (円)", "💰 額面給料 (円)", "📊 集計数値"],
         horizontal=True,
         label_visibility="collapsed"
     )
 
 fig = go.Figure()
-if chart_view == "💰 給料額 (円)":
+if chart_view == "💵 手取り額 (円)":
     fig.add_trace(go.Bar(
         x=monthly_df["display_month"],
-        y=monthly_df["salary"],
+        y=monthly_df["take_home"],
         marker_color="#11998e",
-        text=monthly_df["salary"].apply(lambda v: f"¥{v:,}"),
+        text=monthly_df["take_home"].apply(lambda v: f"¥{v:,}"),
         textposition="outside",
-        name="給料額",
-        hovertemplate="<b>%{x}</b><br>給料額: ¥%{y:,}<br>集計値: %{customdata[0]:.3f}<br>単価: ¥%{customdata[1]:,}<extra></extra>",
-        customdata=monthly_df[["total_value", "unit_rate"]]
+        name="手取り額",
+        hovertemplate="<b>%{x}</b><br>手取り見込: ¥%{y:,}<br>額面給料: ¥%{customdata[0]:,}<br>税金控除: ¥%{customdata[1]:,}<br>集計値: %{customdata[2]:.3f}<extra></extra>",
+        customdata=monthly_df[["gross_salary", "tax", "total_value"]]
     ))
-    y_title = "給料額 (円)"
+    y_title = "手取り額 (円)"
+elif chart_view == "💰 額面給料 (円)":
+    fig.add_trace(go.Bar(
+        x=monthly_df["display_month"],
+        y=monthly_df["gross_salary"],
+        marker_color="#3498db",
+        text=monthly_df["gross_salary"].apply(lambda v: f"¥{v:,}"),
+        textposition="outside",
+        name="額面給料",
+        hovertemplate="<b>%{x}</b><br>額面給料: ¥%{y:,}<br>手取り見込: ¥%{customdata[0]:,}<br>集計値: %{customdata[1]:.3f}<br>単価: ¥%{customdata[2]:,}<extra></extra>",
+        customdata=monthly_df[["take_home", "total_value", "unit_rate"]]
+    ))
+    y_title = "額面給料 (円)"
 else:
     fig.add_trace(go.Bar(
         x=monthly_df["display_month"],
@@ -618,8 +827,8 @@ else:
         text=monthly_df["total_value"].apply(lambda v: f"{v:.3f}"),
         textposition="outside",
         name="集計値",
-        hovertemplate="<b>%{x}</b><br>集計値: %{y:.3f}<br>単価: ¥%{customdata[1]:,}<br>給料額: ¥%{customdata[0]:,}<extra></extra>",
-        customdata=monthly_df[["salary", "unit_rate"]]
+        hovertemplate="<b>%{x}</b><br>集計値: %{y:.3f}<br>単価: ¥%{customdata[2]:,}<br>手取り額: ¥%{customdata[0]:,}<br>額面給料: ¥%{customdata[1]:,}<extra></extra>",
+        customdata=monthly_df[["take_home", "gross_salary", "unit_rate"]]
     ))
     y_title = "集計値"
 
@@ -644,7 +853,6 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# 月別一覧テーブル
 # 月別一覧テーブル（直接編集可能）
 col_tbl1, col_tbl2 = st.columns([2, 1])
 with col_tbl1:
@@ -656,7 +864,7 @@ table_df = monthly_df.copy().sort_values(by="year_month", ascending=False).reset
 table_df["avg_value"] = table_df["total_value"] / table_df["count"]
 
 # カラム構成
-show_cols = ["display_month", "total_value", "unit_rate", "salary"]
+show_cols = ["display_month", "total_value", "unit_rate", "gross_salary", "tax", "take_home"]
 if "items_count" in table_df.columns:
     show_cols.append("items_count")
 show_cols.extend(["count", "avg_value"])
@@ -671,7 +879,9 @@ col_config = {
         format="¥%d",
         help="クリックまたはタップして単価を直接変更できます"
     ),
-    "salary": st.column_config.NumberColumn("💰 給料合計 (円)", format="¥%d", disabled=True),
+    "gross_salary": st.column_config.NumberColumn("💰 額面給料", format="¥%d", disabled=True),
+    "tax": st.column_config.NumberColumn("🧾 税金控除", format="¥%d", disabled=True),
+    "take_home": st.column_config.NumberColumn("💵 手取り見込", format="¥%d", disabled=True),
     "count": st.column_config.NumberColumn("報告回数", format="%d 回", disabled=True),
     "avg_value": st.column_config.NumberColumn("1回あたり平均", format="%.3f", disabled=True)
 }
