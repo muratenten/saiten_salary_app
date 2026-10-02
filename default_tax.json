@@ -1,0 +1,14 @@
+{
+  "948919": {
+    "mode": "withholding_1021",
+    "custom_rate": 0.0
+  },
+  "U0BJSQ9362G": {
+    "mode": "withholding_1021",
+    "custom_rate": 0.0
+  },
+  "default": {
+    "mode": "fuyo_salary",
+    "custom_rate": 0.0
+  }
+}

@@ -48,6 +48,8 @@ USERS_FILE = os.path.join(BASE_DIR, "workspace_users.json")
 USER_DATA_DIR = os.path.join(BASE_DIR, "user_data")
 LEGACY_CACHE_FILE = os.path.join(BASE_DIR, "messages_cache.json")
 LEGACY_RATES_FILE = os.path.join(BASE_DIR, "rates_cache.json")
+DEFAULT_RATES_FILE = os.path.join(BASE_DIR, "default_rates.json")
+DEFAULT_TAX_FILE = os.path.join(BASE_DIR, "default_tax.json")
 
 os.makedirs(USER_DATA_DIR, exist_ok=True)
 
@@ -139,31 +141,97 @@ def get_user_storage_path(user_key: str, prefix: str) -> str:
     return os.path.join(USER_DATA_DIR, f"{prefix}_{safe_key}.json")
 
 
+def serialize_rates(rates: dict) -> str:
+    """{'2026-08': 2000, '2026-09': 2700} -> '2026-08:2000,2026-09:2700'"""
+    if not isinstance(rates, dict):
+        return ""
+    return ",".join(f"{k}:{int(v)}" for k, v in sorted(rates.items()))
+
+
+def deserialize_rates(s: str) -> dict:
+    """'2026-08:2000,2026-09:2700' -> {'2026-08': 2000, '2026-09': 2700}"""
+    res = {}
+    if not s:
+        return res
+    if s.startswith("{"):
+        try:
+            return {k: int(v) for k, v in json.loads(s).items()}
+        except Exception:
+            pass
+    parts = s.split(",")
+    for p in parts:
+        if ":" in p:
+            k, v = p.split(":", 1)
+            try:
+                res[k.strip()] = int(v.strip())
+            except ValueError:
+                pass
+    return res
+
+
 def load_user_rates(user_key: str) -> dict:
+    rates = {}
+
+    # 1. リポジトリ内デフォルト（スリープ復帰時にも必ず残るベース値）
+    if os.path.exists(DEFAULT_RATES_FILE):
+        try:
+            with open(DEFAULT_RATES_FILE, "r", encoding="utf-8") as f:
+                def_data = json.load(f)
+                if isinstance(def_data, dict):
+                    if user_key in def_data and isinstance(def_data[user_key], dict):
+                        rates.update({k: int(v) for k, v in def_data[user_key].items()})
+                    if user_key in ["948919", "U0BJSQ9362G"]:
+                        for k in ["948919", "U0BJSQ9362G"]:
+                            if k in def_data and isinstance(def_data[k], dict):
+                                rates.update({mk: int(mv) for mk, mv in def_data[k].items()})
+                    if "default" in def_data and isinstance(def_data["default"], dict):
+                        for k, v in def_data["default"].items():
+                            rates.setdefault(k, int(v))
+        except Exception:
+            pass
+
+    # 2. サーバー側ローカルファイル（コンテナ稼働中）
     fpath = get_user_storage_path(user_key, "rates")
     if os.path.exists(fpath):
         try:
             with open(fpath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                disk_data = json.load(f)
+                if isinstance(disk_data, dict):
+                    rates.update({k: int(v) for k, v in disk_data.items()})
         except Exception:
             pass
-    # レガシー移行
+
+    # 3. レガシーファイル
     if user_key in ["948919", "U0BJSQ9362G"] and os.path.exists(LEGACY_RATES_FILE):
         try:
             with open(LEGACY_RATES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                leg = json.load(f)
+                if isinstance(leg, dict):
+                    rates.update({k: int(v) for k, v in leg.items()})
         except Exception:
             pass
-    return {}
+
+    # 4. URL クエリパラメータ（最優先：ブラウザURLバーに保持された設定）
+    url_rates_str = st.query_params.get("rates", "")
+    if url_rates_str:
+        url_rates = deserialize_rates(url_rates_str)
+        if url_rates:
+            rates.update(url_rates)
+
+    return rates
 
 
 def save_user_rates(user_key: str, rates: dict):
+    # 1. サーバー側ファイルに保存
     fpath = get_user_storage_path(user_key, "rates")
     try:
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(rates, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+    # 2. URLクエリパラメータに反映（URLバーが自動更新され、リロード・共有時も維持）
+    if rates:
+        st.query_params["rates"] = serialize_rates(rates)
 
 
 def calc_income_tax_kou(gross_salary: int) -> int:
@@ -250,23 +318,60 @@ def calculate_tax(gross_salary: int, mode: str, custom_rate: float = 0.0) -> int
 
 
 def load_user_tax_setting(user_key: str) -> dict:
+    setting = {"mode": "withholding_1021" if user_key in ["948919", "U0BJSQ9362G"] else "fuyo_salary", "custom_rate": 0.0}
+
+    # 1. リポジトリ内デフォルト（スリープ復帰時にも残る）
+    if os.path.exists(DEFAULT_TAX_FILE):
+        try:
+            with open(DEFAULT_TAX_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                if isinstance(d, dict):
+                    if user_key in d and isinstance(d[user_key], dict):
+                        setting.update(d[user_key])
+                    elif "default" in d and isinstance(d["default"], dict):
+                        setting.update(d["default"])
+        except Exception:
+            pass
+
+    # 2. サーバー側ローカルファイル
     fpath = get_user_storage_path(user_key, "tax")
     if os.path.exists(fpath):
         try:
             with open(fpath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                disk_tax = json.load(f)
+                if isinstance(disk_tax, dict):
+                    setting.update(disk_tax)
         except Exception:
             pass
-    return {"mode": "fuyo_salary", "custom_rate": 0.0}
+
+    # 3. URLクエリパラメータ（最優先）
+    url_tax = st.query_params.get("tax", "")
+    if url_tax:
+        setting["mode"] = url_tax
+    url_rate = st.query_params.get("tax_rate", "")
+    if url_rate:
+        try:
+            setting["custom_rate"] = float(url_rate)
+        except ValueError:
+            pass
+
+    return setting
 
 
 def save_user_tax_setting(user_key: str, setting: dict):
+    # 1. サーバー側ローカルファイルに保存
     fpath = get_user_storage_path(user_key, "tax")
     try:
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(setting, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+    # 2. URLクエリパラメータに反映
+    st.query_params["tax"] = setting.get("mode", "fuyo_salary")
+    if setting.get("mode") == "custom":
+        st.query_params["tax_rate"] = str(setting.get("custom_rate", 0.0))
+    elif "tax_rate" in st.query_params:
+        del st.query_params["tax_rate"]
 
 
 def make_initial_demo_records():
@@ -450,6 +555,24 @@ elif "id" in st.query_params:
 
 # 未入力時はクリーンな初期案内画面を表示
 if not search_input:
+    sync_init_js = """
+    <script>
+    (function() {
+        try {
+            let topLoc = window.parent.location || window.top.location;
+            const url = new URL(topLoc.href);
+            if (!url.searchParams.has("id") && !url.searchParams.has("clear")) {
+                const lastId = localStorage.getItem("saiten_last_id");
+                if (lastId) {
+                    url.searchParams.set("id", lastId);
+                    topLoc.replace(url.toString());
+                }
+            }
+        } catch(e) {}
+    })();
+    </script>
+    """
+    st.components.v1.html(sync_init_js, height=0, width=0)
     st.info("👆 **上の入力枠に、ご自身の「社員番号」または「お名前」を入力してください。**\n\n入力すると、自動でメンバーを照合して給料計算画面が表示されます。")
     st.stop()
 
@@ -468,6 +591,68 @@ elif search_input:
 current_records = load_user_records(active_user_key)
 current_rates = load_user_rates(active_user_key)
 current_tax_setting = load_user_tax_setting(active_user_key)
+
+# ブラウザ localStorage 同期（スリープ復帰時にも端末ブラウザから単価・設定を自動復元）
+rates_ser = serialize_rates(current_rates)
+tax_mode_str = current_tax_setting.get("mode", "fuyo_salary")
+
+sync_active_js = f"""
+<script>
+(function() {{
+    try {{
+        const userKey = "{active_user_key}";
+        const currentRates = "{rates_ser}";
+        const currentTax = "{tax_mode_str}";
+        const searchInput = "{search_input}";
+        
+        // 1. 社員番号・単価・税金設定をブラウザの localStorage にバックアップ保存
+        if (searchInput) {{
+            localStorage.setItem("saiten_last_id", searchInput);
+        }}
+        if (currentRates) {{
+            localStorage.setItem("saiten_rates_" + userKey, currentRates);
+        }}
+        if (currentTax) {{
+            localStorage.setItem("saiten_tax_" + userKey, currentTax);
+        }}
+        
+        // 2. もしURLパラメータに単価(rates)や税金(tax)が欠けていて、localStorageにあるならURLに補完してリロード
+        let topLoc = null;
+        try {{
+            topLoc = window.parent.location;
+            if (!topLoc.href) throw new Error();
+        }} catch(e) {{
+            try {{ topLoc = window.top.location; }} catch(e2) {{}}
+        }}
+        
+        if (topLoc) {{
+            const url = new URL(topLoc.href);
+            let updated = false;
+            if (!url.searchParams.has("rates")) {{
+                const savedRates = localStorage.getItem("saiten_rates_" + userKey);
+                if (savedRates) {{
+                    url.searchParams.set("rates", savedRates);
+                    updated = true;
+                }}
+            }}
+            if (!url.searchParams.has("tax")) {{
+                const savedTax = localStorage.getItem("saiten_tax_" + userKey);
+                if (savedTax) {{
+                    url.searchParams.set("tax", savedTax);
+                    updated = true;
+                }}
+            }}
+            if (updated) {{
+                topLoc.replace(url.toString());
+            }}
+        }}
+    }} catch (e) {{
+        console.warn("Storage sync skipped:", e);
+    }}
+}})();
+</script>
+"""
+st.components.v1.html(sync_active_js, height=0, width=0)
 
 valid_records = []
 for r in current_records:
@@ -508,6 +693,7 @@ with col_input3:
     if input_rate != current_saved_rate:
         current_rates[selected_month] = input_rate
         save_user_rates(active_user_key, current_rates)
+        st.toast(f"✅ {month_short_label}の単価を ¥{input_rate:,} に保存しました！")
         st.rerun()
 
 # ----------------- 税金・手取り設定 -----------------
@@ -552,6 +738,7 @@ with st.expander(f"⚙️ 税金・手取り計算の設定（現在: {tax_modes
         current_tax_setting["mode"] = selected_tax_mode
         current_tax_setting["custom_rate"] = new_custom_rate
         save_user_tax_setting(active_user_key, current_tax_setting)
+        st.toast("✅ 税金・手取り設定を保存しました！")
         st.rerun()
 
 # ----------------- 自動更新ボタン（Slack連携済みの場合） -----------------
@@ -908,6 +1095,7 @@ for idx, row in edited_table.iterrows():
 
 if rate_updated:
     save_user_rates(active_user_key, current_rates)
+    st.toast("✅ 月別テーブルの単価を保存しました！")
     st.rerun()
 
 # 該当ログの確認（折りたたみ）
