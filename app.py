@@ -169,6 +169,33 @@ def deserialize_rates(s: str) -> dict:
     return res
 
 
+def get_rate_for_month(rates: dict, target_ym: str, default_val: int = 2000) -> int:
+    """指定月の単価を取得。もし未設定なら、直近月の単価を自動継承する"""
+    if not isinstance(rates, dict):
+        return default_val
+    if target_ym in rates:
+        try:
+            return int(rates[target_ym])
+        except (ValueError, TypeError):
+            pass
+    # 過去の月の中で最も新しい月の単価を自動引き継ぎ
+    past_months = [ym for ym in rates.keys() if str(ym) < str(target_ym)]
+    if past_months:
+        latest_past = max(past_months)
+        try:
+            return int(rates[latest_past])
+        except (ValueError, TypeError):
+            pass
+    # 登録されている全月の中で最も新しい単価
+    if rates:
+        latest_any = max(rates.keys())
+        try:
+            return int(rates[latest_any])
+        except (ValueError, TypeError):
+            pass
+    return default_val
+
+
 def load_user_rates(user_key: str) -> dict:
     rates = {}
 
@@ -605,18 +632,47 @@ sync_active_js = f"""
         const currentTax = "{tax_mode_str}";
         const searchInput = "{search_input}";
         
-        // 1. 社員番号・単価・税金設定をブラウザの localStorage にバックアップ保存
+        // 1. 社員番号を保存
         if (searchInput) {{
             localStorage.setItem("saiten_last_id", searchInput);
-        }}
-        if (currentRates) {{
-            localStorage.setItem("saiten_rates_" + userKey, currentRates);
         }}
         if (currentTax) {{
             localStorage.setItem("saiten_tax_" + userKey, currentTax);
         }}
         
-        // 2. もしURLパラメータに単価(rates)や税金(tax)が欠けていて、localStorageにあるならURLに補完してリロード
+        // 2. 単価の安全なマージ（既存の月を上書き消去しない）
+        let mergedRates = {{}};
+        try {{
+            const stored = localStorage.getItem("saiten_rates_" + userKey);
+            if (stored) {{
+                stored.split(",").forEach(function(item) {{
+                    const kv = item.split(":");
+                    if (kv.length === 2 && kv[0].trim() && kv[1].trim()) {{
+                        mergedRates[kv[0].trim()] = parseInt(kv[1].trim(), 10);
+                    }}
+                }});
+            }}
+        }} catch(e) {{}}
+
+        // サーバー側の単価をマージ（上書き更新）
+        if (currentRates) {{
+            currentRates.split(",").forEach(function(item) {{
+                const kv = item.split(":");
+                if (kv.length === 2 && kv[0].trim() && kv[1].trim()) {{
+                    mergedRates[kv[0].trim()] = parseInt(kv[1].trim(), 10);
+                }}
+            }});
+        }}
+
+        // 完全版をlocalStorageに保存
+        const keys = Object.keys(mergedRates).sort();
+        let finalRatesStr = "";
+        if (keys.length > 0) {{
+            finalRatesStr = keys.map(function(k) {{ return k + ":" + mergedRates[k]; }}).join(",");
+            localStorage.setItem("saiten_rates_" + userKey, finalRatesStr);
+        }}
+        
+        // 3. 親ウィンドウのURLパラメータを確認・補完
         let topLoc = null;
         try {{
             topLoc = window.parent.location;
@@ -628,12 +684,10 @@ sync_active_js = f"""
         if (topLoc) {{
             const url = new URL(topLoc.href);
             let updated = false;
-            if (!url.searchParams.has("rates")) {{
-                const savedRates = localStorage.getItem("saiten_rates_" + userKey);
-                if (savedRates) {{
-                    url.searchParams.set("rates", savedRates);
-                    updated = true;
-                }}
+            const urlRates = url.searchParams.get("rates") || "";
+            if (finalRatesStr && urlRates !== finalRatesStr) {{
+                url.searchParams.set("rates", finalRatesStr);
+                updated = true;
             }}
             if (!url.searchParams.has("tax")) {{
                 const savedTax = localStorage.getItem("saiten_tax_" + userKey);
@@ -663,12 +717,17 @@ for r in current_records:
 
 df = pd.DataFrame(valid_records)
 
-# 月の選択肢
+# 月の選択肢（今月を必ず含める & 登録済み単価の月も含める）
+current_now_ym = datetime.now(JST).strftime("%Y-%m")
+all_avail_months = set()
+all_avail_months.add(current_now_ym)
 if not df.empty and "year_month" in df.columns:
-    month_options = list(reversed(sorted(df["year_month"].unique().tolist())))
-else:
-    month_options = [datetime.now(JST).strftime("%Y-%m")]
+    for ym in df["year_month"].dropna().unique():
+        all_avail_months.add(str(ym))
+for ym in current_rates.keys():
+    all_avail_months.add(str(ym))
 
+month_options = list(reversed(sorted(all_avail_months)))
 month_display_map = {ym: format_japanese_month(ym) for ym in month_options}
 
 with col_input2:
@@ -680,7 +739,7 @@ with col_input2:
     )
 
 with col_input3:
-    current_saved_rate = int(current_rates.get(selected_month, 2000))
+    current_saved_rate = get_rate_for_month(current_rates, selected_month, 2000)
     month_short_label = format_japanese_month(selected_month)
     input_rate = st.number_input(
         f"💴 {month_short_label}の単価 (円)",
@@ -887,7 +946,7 @@ if monthly_df.empty:
     st.stop()
 
 # 各月の単価と給料を計算
-monthly_df["unit_rate"] = monthly_df["year_month"].apply(lambda ym: current_rates.get(ym, 2000))
+monthly_df["unit_rate"] = monthly_df["year_month"].apply(lambda ym: get_rate_for_month(current_rates, ym, 2000))
 monthly_df["gross_salary"] = (monthly_df["total_value"] * monthly_df["unit_rate"]).round().astype(int)
 monthly_df["salary"] = monthly_df["gross_salary"]
 
@@ -1088,7 +1147,7 @@ rate_updated = False
 for idx, row in edited_table.iterrows():
     ym = str(table_df.at[idx, "year_month"])
     new_rate = int(row["unit_rate"])
-    old_rate = int(current_rates.get(ym, 2000))
+    old_rate = get_rate_for_month(current_rates, ym, 2000)
     if new_rate != old_rate:
         current_rates[ym] = new_rate
         rate_updated = True
